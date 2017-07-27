@@ -5,13 +5,13 @@ import {
   CharacterMetadata,
   ContentBlock,
   ContentState,
-  Entity,
   genKey,
 } from 'draft-js';
 import {List, Map, OrderedSet, Repeat, Seq} from 'immutable';
 import {BLOCK_TYPE, ENTITY_TYPE, INLINE_STYLE} from 'draft-js-utils';
 import {NODE_TYPE_ELEMENT, NODE_TYPE_TEXT} from 'synthetic-dom';
 
+import type {Entity} from 'draft-js';
 import type {Set, IndexedSeq} from 'immutable';
 import type {
   Node as SyntheticNode,
@@ -101,18 +101,18 @@ const getEntityData = (tagName: string, element: DOMElement) => {
 
 // Functions to convert elements to entities.
 const ELEM_TO_ENTITY = {
-  a(tagName: string, element: DOMElement): ?string {
+  a(generator: ContentGenerator, tagName: string, element: DOMElement): ?string {
     let data = getEntityData(tagName, element);
     // Don't add `<a>` elements with no href.
     if (data.url != null) {
-      return Entity.create(ENTITY_TYPE.LINK, 'MUTABLE', data);
+      return generator.createEntity(ENTITY_TYPE.LINK, 'MUTABLE', data);
     }
   },
-  img(tagName: string, element: DOMElement): ?string {
+  img(generator: ContentGenerator, tagName: string, element: DOMElement): ?string {
     let data = getEntityData(tagName, element);
     // Don't add `<img>` elements with no src.
     if (data.src != null) {
-      return Entity.create(ENTITY_TYPE.IMAGE, 'MUTABLE', data);
+      return generator.createEntity(ENTITY_TYPE.IMAGE, 'MUTABLE', data);
     }
   },
 };
@@ -143,7 +143,8 @@ const SPECIAL_ELEMENTS = {
 // These elements are special because they cannot contain childNodes.
 const SELF_CLOSING_ELEMENTS = {img: 1};
 
-class BlockGenerator {
+class ContentGenerator {
+  contentStateForEntities: ContentState;
   blockStack: Array<ParsedBlock>;
   blockList: Array<ParsedBlock>;
   depth: number;
@@ -151,6 +152,7 @@ class BlockGenerator {
 
   constructor(options: Options = {}) {
     this.options = options;
+    this.contentStateForEntities = ContentState.createFromBlockArray([]);
     // This represents the hierarchy as we traverse nested elements; for
     // example [body, ul, li] where we must know li's parent type (ul or ol).
     this.blockStack = [];
@@ -160,7 +162,7 @@ class BlockGenerator {
     this.depth = 0;
   }
 
-  process(element: DOMElement): Array<ContentBlock> {
+  process(element: DOMElement): ContentState {
     this.processBlockElement(element);
     let contentBlocks = [];
     this.blockList.forEach((block) => {
@@ -194,11 +196,13 @@ class BlockGenerator {
         );
       }
     });
-    if (contentBlocks.length) {
-      return contentBlocks;
-    } else {
-      return [EMPTY_BLOCK];
+    if (!contentBlocks.length) {
+      contentBlocks = [EMPTY_BLOCK];
     }
+    return ContentState.createFromBlockArray(
+      contentBlocks,
+      this.contentStateForEntities.getEntityMap(),
+    );
   }
 
   getBlockTypeFromTagName(tagName: string): string {
@@ -303,7 +307,7 @@ class BlockGenerator {
     style = addStyleFromTagName(style, tagName, this.options.elementStyles);
     if (ELEM_TO_ENTITY.hasOwnProperty(tagName)) {
       // If the to-entity function returns nothing, use the existing entity.
-      entityKey = ELEM_TO_ENTITY[tagName](tagName, element) || entityKey;
+      entityKey = ELEM_TO_ENTITY[tagName](this, tagName, element) || entityKey;
     }
     block.styleStack.push(style);
     block.entityStack.push(entityKey);
@@ -356,6 +360,11 @@ class BlockGenerator {
     } else if (node.nodeType === NODE_TYPE_TEXT) {
       this.processTextNode(node);
     }
+  }
+
+  createEntity(type: string, mutability: string, data: Object) {
+    this.contentStateForEntities = this.contentStateForEntities.createEntity(type, mutability, data);
+    return this.contentStateForEntities.getLastCreatedEntityKey();
   }
 }
 
@@ -463,6 +472,5 @@ function addStyleFromTagName(styleSet: StyleSet, tagName: string, elementStyles?
 }
 
 export default function stateFromElement(element: DOMElement, options?: Options): ContentState {
-  let blocks = new BlockGenerator(options).process(element);
-  return ContentState.createFromBlockArray(blocks);
+  return new ContentGenerator(options).process(element);
 }
